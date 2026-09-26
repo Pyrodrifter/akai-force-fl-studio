@@ -662,11 +662,7 @@ class Force:
                     label, col = "", 0
                 else:
                     label, col = playlist.getTrackName(tr), self.color_of(playlist.getTrackColor(tr))
-                    led = col
-                    if self.assign == "mute" and playlist.isTrackMuted(tr):
-                        led = fp.COLOR_1
-                    elif self.assign == "solo" and playlist.isTrackSolo(tr):
-                        led = fp.COLOR_2
+                    led = fp.COLOR_1 if playlist.isTrackMuted(tr) else col
             elif mode == "PATTERNS":
                 first = self.pattern_ofs + s * 8 + 1
                 label, col = "Pat %d-%d" % (first, first + 7), C_DARK
@@ -1270,12 +1266,13 @@ class Force:
             tr = self.perf_track(s)
             if tr is None:
                 return
-            if self.assign == "mute":
+            # plain press = stop the track's clip; SHIFT+press = mute/unmute the track
+            if self.shift:
                 playlist.muteTrack(tr)
-            elif self.assign == "solo":
-                playlist.soloTrack(tr)
+                self.hint("%s %s" % (playlist.getTrackName(tr), "muted" if playlist.isTrackMuted(tr) else "unmuted"))
             elif safe:
                 playlist.triggerLiveClip(tr, -1, midi.TLC_MuteOthers | midi.TLC_Fill)
+                self.hint("stopped " + playlist.getTrackName(tr))
         elif mode == "STEPS":
             c = self.step_chan_ofs + s
             if c < channels.channelCount():

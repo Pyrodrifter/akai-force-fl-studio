@@ -375,15 +375,17 @@ def run_checks():
     send(0x9C, fp.pad_note(2, 3), 90); send(0x9C, fp.pad_note(2, 3), 0)
     check(calls[0] == ("playlist.triggerLiveClip", (4, 2, midi.TLC_MuteOthers | midi.TLC_Fill)),
           "perform: pad in column 3, row 4 launches block 3 of playlist track 4")
-    send(0x9C, fp.PHYS_SCENE_LAUNCH + 3, 127); idle()
-    check(calls[-1] == ("playlist.muteTrack", (4,)) and F.sent[(0x9C, fp.PHYS_SCENE_LAUNCH + 3)] == fp.COLOR_1,
-          "perform, MUTE row mode: right-hand button 4 mutes playlist track 4 and lights")
-    send(0x9C, fp.PHYS_BUTTONS["solo"], 127); send(0x9C, fp.PHYS_SCENE_LAUNCH + 3, 127)
-    check(calls[-1] == ("playlist.soloTrack", (4,)), "perform, SOLO row mode: right-hand button solos the playlist track")
-    send(0x9C, fp.PHYS_BUTTONS["clip_stop"], 127)
+    send(0x9C, fp.PHYS_BUTTONS["solo"], 127)          # the row selector must not affect the right-hand buttons
     send(0x9C, fp.PHYS_SCENE_LAUNCH + 3, 127)
-    check(calls[-1] == ("playlist.triggerLiveClip", (4, -1, midi.TLC_MuteOthers | midi.TLC_Fill)),
-          "perform, CLIP STOP row mode: right-hand button 4 stops playlist track 4")
+    check(("playlist.triggerLiveClip", (4, -1, midi.TLC_MuteOthers | midi.TLC_Fill)) in calls
+          and not any(c[0] in ("playlist.soloTrack", "playlist.muteTrack") for c in calls),
+          "perform: right-hand button 4 stops playlist track 4 (never mutes/solos)")
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.PHYS_SCENE_LAUNCH + 3, 127); send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
+    idle()
+    check(("playlist.muteTrack", (4,)) in calls and F.sent[(0x9C, fp.PHYS_SCENE_LAUNCH + 3)] == fp.COLOR_1,
+          "perform: SHIFT + right-hand button mutes the track and its button turns red")
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.PHYS_SCENE_LAUNCH + 3, 127); send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
+    send(0x9C, fp.PHYS_BUTTONS["clip_stop"], 127)
     send(0x9C, fp.PHYS_TRACK_ASSIGN + 2, 127)
     check(calls[-1][1][:2] == (1, 2) and calls[-1][1][2] & midi.TLC_ColumnMode,
           "perform: CLIP STOP row button 3 launches block column 3")
