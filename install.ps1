@@ -5,6 +5,8 @@
 .DESCRIPTION
     Copies device_AkaiForce.py and force_protocol.py into FL Studio's user
     "Hardware" folder, then checks that the Akai Network MIDI driver is present.
+    force_plugin_maps.py (your own plugin knob pages) is copied only the first
+    time, so your edits survive updates.
 
     Run it any of these ways:
       * Double-click install.bat (from the release zip)
@@ -26,6 +28,7 @@ $ErrorActionPreference = 'Stop'
 $Repo = 'Pyrodrifter/akai-force-fl-studio'
 $Branch = 'main'
 $Files = @('device_AkaiForce.py', 'force_protocol.py')
+$UserFiles = @('force_plugin_maps.py')     # installed once, never overwritten
 $FolderName = 'Akai Force Live'
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
@@ -71,7 +74,7 @@ if ($local) {
     New-Item -ItemType Directory -Force $staging | Out-Null
     Say "Downloading the latest script from github.com/$Repo ..."
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    foreach ($f in $Files) {
+    foreach ($f in $Files + $UserFiles) {
         Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$Repo/$Branch/$f" -OutFile (Join-Path $staging $f)
     }
     $src = $staging
@@ -85,6 +88,10 @@ if (-not (Test-Path $hw)) {
 }
 New-Item -ItemType Directory -Force $dest | Out-Null
 foreach ($f in $Files) { Copy-Item -LiteralPath (Join-Path $src $f) -Destination $dest -Force }
+foreach ($f in $UserFiles) {
+    if (Test-Path (Join-Path $dest $f)) { Say "Kept your $f" }
+    elseif (Test-Path (Join-Path $src $f)) { Copy-Item -LiteralPath (Join-Path $src $f) -Destination $dest }
+}
 if ($staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
 $m = Select-String -LiteralPath (Join-Path $dest 'device_AkaiForce.py') -Pattern '^VERSION = "(.+)"' | Select-Object -First 1
 $version = if ($m) { $m.Matches[0].Groups[1].Value } else { '(unknown)' }

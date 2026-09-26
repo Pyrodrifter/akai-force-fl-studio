@@ -5,7 +5,8 @@ fl_sim.py - run device_AkaiForce.py outside FL Studio against a fake FL project.
   python fl_sim.py --live     # connect the script to the real Force over the network port
 
 The fake modules implement just enough of FL's scripting API for the script.
-FL's real midi.py (constants only) is loaded from the FL install.
+FL's real midi.py (constants only) is loaded from the FL install, or, without FL
+(e.g. on Linux / CI), from the fl-studio-api-stubs package: pip install fl-studio-api-stubs
 """
 import importlib.util
 import math
@@ -15,11 +16,16 @@ import sys
 import time
 import types
 
-FL_MIDI = r"C:\Program Files\Image-Line\FL Studio 2026\Shared\Python\Lib\midi.py"
+FL_MIDI = os.environ.get("FL_MIDI", r"C:\Program Files\Image-Line\FL Studio 2026\Shared\Python\Lib\midi.py")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def load_midi():
+    if not os.path.exists(FL_MIDI):
+        import midi as stub          # fl-studio-api-stubs
+        if not hasattr(stub, "REC_Plug_Mute"):   # missing from the stubs; any offset works in the sim
+            stub.REC_Plug_Mute = stub.REC_PlugReserved + 8
+        return stub
     spec = importlib.util.spec_from_file_location("midi", FL_MIDI)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -259,7 +265,47 @@ def jump_to_marker(delta, select):
 
 
 module("arrangement", getMarkerName=lambda i: S.markers[i][0] if i < len(S.markers) else "",
-       jumpToMarker=jump_to_marker)
+       jumpToMarker=jump_to_marker,
+       addAutoTimeMarker=lambda t, name: (rec("arrangement.addAutoTimeMarker", t, name),
+                                          S.markers.append((name, t)), S.markers.sort(key=lambda m: m[1]))[0])
+
+# --- window, snap, recording options, channel loops (1.2 features) -----------------
+S.focused, S.visible = None, set()
+S.opts = dict(precount=False, loop_rec=False, step_edit=False, overdub=False)
+S.snap = 8                                    # Snap_Step
+S.chan_loops = {}                             # (pattern, channel) -> loop point
+
+
+def global_transport(cmd, val, pme=0, flags=0):
+    rec("transport.globalTransport", cmd, val)
+    for fpt, opt in ((midi.FPT_CountDown, "precount"), (midi.FPT_LoopRecord, "loop_rec"), (midi.FPT_Overdub, "overdub")):
+        if cmd == fpt:
+            S.opts[opt] = not S.opts[opt]
+    if cmd == midi.FPT_Metronome:
+        S.metronome = not S.metronome
+
+
+def find_empty_pattern(flags, x=-1, y=-1):
+    rec("patterns.findFirstNextEmptyPat", flags)
+    S.pattern = S.pattern_count = S.pattern_count + 1
+
+
+_m["transport"].globalTransport = global_transport
+_m["ui"].isPrecountEnabled = lambda: S.opts["precount"]
+_m["ui"].isLoopRecEnabled = lambda: S.opts["loop_rec"]
+_m["ui"].getStepEditMode = lambda: S.opts["step_edit"]
+_m["ui"].setStepEditMode = lambda v: S.opts.__setitem__("step_edit", bool(v))
+_m["ui"].getSnapMode = lambda: S.snap
+_m["ui"].setSnapMode = lambda v: (rec("ui.setSnapMode", v), setattr(S, "snap", v))[0]
+_m["ui"].showWindow = lambda w: (rec("ui.showWindow", w), S.visible.add(w))[0]
+_m["ui"].hideWindow = lambda w: (rec("ui.hideWindow", w), S.visible.discard(w))[0]
+_m["ui"].setFocused = lambda w: setattr(S, "focused", w)
+_m["ui"].getVisible = lambda w: w in S.visible
+_m["ui"].getFocused = lambda w: w == S.focused
+_m["patterns"].findFirstNextEmptyPat = find_empty_pattern
+_m["patterns"].getChannelLoopStyle = lambda pat, c: S.chan_loops.get((pat, c), 0)
+_m["patterns"].setChannelLoop = lambda c, n: (rec("patterns.setChannelLoop", c, n),
+                                               S.chan_loops.__setitem__((S.pattern, c), n))[0]
 
 
 class Event:
@@ -638,6 +684,156 @@ def run_checks():
     pong(); idle()
     check(F.connected and texts()[fp.TXT_TRACK_NAME(0)] == "Insert 2" and len(out_sysex) - before > 50,
           "re-init reconnects and resends the full screen state")
+
+    # --- 1.2: ASSIGN A / B, on-screen transport buttons and their lights --------------------------
+    B, G = fp.PHYS_BUTTONS, fp.GLOBAL_BUTTONS
+
+    def press(ch, note_, shift=False):
+        if shift:
+            send(0x9C, B["shift"], 127)
+        e = send(0x90 | ch, note_, 127)
+        send(0x90 | ch, note_, 0)
+        if shift:
+            send(0x9C, B["shift"], 0)
+        return e
+
+    press(12, B["assign_a"])
+    check(S.focused == midi.widMixer, "ASSIGN A (windows): first press opens the mixer")
+    press(12, B["assign_a"])
+    check(S.focused == midi.widChannelRack, "ASSIGN A: next press goes on to the channel rack")
+    press(12, B["assign_a"], shift=True)
+    check(S.focused == midi.widMixer, "SHIFT+ASSIGN A goes back a window")
+    S.loop_mode = midi.SM_Pat
+    press(12, B["assign_b"]); idle()
+    check(S.loop_mode == midi.SM_Song and F.sent[(0x9C, B["assign_b"])] == fp.COLOR_ON,
+          "ASSIGN B (song mode): switches to song mode and lights")
+    press(12, B["assign_b"]); idle()
+    check(S.loop_mode == midi.SM_Pat and F.sent[(0x9C, B["assign_b"])] == fp.COLOR_1, "ASSIGN B again: back to pattern mode, dim")
+
+    press(10, G["overdub"])
+    check(calls[-2] == ("transport.globalTransport", (midi.FPT_Overdub, 1)), "on-screen overdub toggles FL's overdub recording")
+    press(10, G["overdub"], shift=True); idle()
+    check(S.opts["loop_rec"], "SHIFT+overdub toggles loop recording")
+    press(10, G["automation_arm"]); idle()
+    check(S.opts["precount"] and F.sent[(0x9A, G["automation_arm"])] == 127, "automation arm = count-in, and it lights")
+    press(10, G["follow"]); idle()
+    check(not F.follow and F.sent[(0x9A, G["follow"])] == 0, "follow turns off and goes dark")
+    press(10, G["follow"])
+    S.tempo = 140.0
+    press(10, G["nudge_up"])
+    check(S.tempo == 141.0, "nudge + raises the tempo 1 BPM")
+    press(10, G["nudge_down"], shift=True)
+    check(abs(S.tempo - 140.9) < 1e-6, "SHIFT+nudge - lowers it 0.1 BPM")
+    S.snap = midi.Snap_Step
+    press(10, G["quantize_value"]); idle()
+    check(S.snap == midi.Snap_HalfBeat and texts()[fp.TXT_OLED_MIXER(0)] == "SNAP 1/2 BEAT",
+          "quantize value steps FL's snap (step -> 1/2 beat) and shows it")
+    n_pat = S.pattern_count
+    press(10, G["insert_scene"])
+    check(S.pattern == n_pat + 1 and calls[-2][0] == "patterns.findFirstNextEmptyPat", "insert scene makes a new empty pattern")
+    S.pos, n_markers = 3 * 384, len(S.markers)
+    press(10, G["insert_scene"], shift=True)
+    check(len(S.markers) == n_markers + 1 and ("Bar 4", 3 * 384) in S.markers, "SHIFT+insert scene adds a marker at the playhead")
+    S.markers.remove(("Bar 4", 3 * 384))
+    S.playing = S.recording = False
+    press(10, G["arrangement_record"]); idle()
+    check(S.recording and S.playing and S.loop_mode == midi.SM_Song and F.sent[(0x9A, G["arrangement_record"])] == 127,
+          "arrangement record: song mode, recording, playing, lit")
+    press(10, G["arrangement_record"])
+    check(not S.recording, "arrangement record again stops recording")
+    S.pos = 0; F.last_refresh = 0; script.OnIdle()
+    check(F.sent[(0x9C, B["tap_tempo"])] == fp.COLOR_ON, "TAP TEMPO lights on the beat while playing")
+    S.pos = 50; script.OnIdle()
+    check(F.sent[(0x9C, B["tap_tempo"])] == fp.COLOR_1, "...and dims between beats")
+    S.playing = False
+    F.set_mode(script.MODES.index("PLUGIN"))
+
+    # --- device lock ---
+    S.sel_chan, F.fx_mode = 0, False
+    press(10, G["device_lock"])
+    S.sel_chan = 3; idle()
+    check(texts()[fp.TXT_DEVICE_NAME] == "Synth for Kick" and F.sent[(0x9A, G["device_lock"])] == 127,
+          "device lock: the device page stays on the locked plugin when another channel is selected")
+    press(10, G["device_lock"]); idle()
+    check(texts()[fp.TXT_DEVICE_NAME] == "Synth for Clap", "unlocking follows the selected channel again")
+
+    # --- your own parameter pages (force_plugin_maps.py) ---
+    script.PLUGIN_MAPS = {"synth for clap": [("Filter", ["cutoff", "Resonance", "No such knob", 6])]}
+    F.param_cache_key = None; F.flash_until = time.time() - 1; idle()
+    t = texts()
+    check(t[fp.TXT_DEVICE_BANK].startswith("Filter 1/") and t[fp.TXT_OLED_DEVICE(0)] == "Cutoff"
+          and t[fp.TXT_OLED_DEVICE(3)] == "Drive" and t[fp.TXT_OLED_DEVICE(2)] == "",
+          "plugin map: your page first, parameters by name or index, a missing one leaves its knob empty")
+    check(t[fp.TXT_CLIP_NAME(0, 7)] == "Cutoff" and t[fp.TXT_SCENE_NAME(0)] == "Filter" and t[fp.TXT_SCENE_NAME(1)] == "Bank 2",
+          "plugin map: PLUGIN mode shows the page name; automatic banks follow it")
+    calls.clear()
+    send(0xBD, fp.KNOB_DEVICE + 2, 5)
+    check(not calls, "plugin map: an empty knob does nothing")
+    send(0xBD, fp.KNOB_DEVICE + 3, 5)
+    check(calls[-1][0] == "plugins.setParamValue" and calls[-1][1][1] == 6, "plugin map: knob 4 moves parameter index 6")
+    printed = []
+    script.print = lambda *a: printed.append(" ".join(map(str, a)))
+    press(12, B["copy"], shift=True)
+    del script.print
+    check(printed and printed[0].startswith("    'Synth for Clap': [") and "'Macro 1'" in printed[0],
+          "PLUGIN: SHIFT+COPY prints the parameter list to paste into force_plugin_maps.py")
+    script.PLUGIN_MAPS = {}
+    F.param_cache_key = None
+
+    # --- STEPS extras ---
+    F.set_mode(script.MODES.index("STEPS")); F.step_ofs = F.step_chan_ofs = 0
+    for k in list(S.grid):
+        if k[0] in (0, 1):
+            del S.grid[k]
+    send(0x9C, fp.pad_note(1, 0), 120); send(0x9C, fp.pad_note(1, 0), 0)
+    check(S.grid.get((0, 1)) and S.sp[(0, 1, midi.pVelocity)] == 120, "STEPS: a new step takes the pad's velocity (accent)")
+    send(0x9C, fp.pad_note(3, 0), 90); send(0x9C, fp.pad_note(6, 0), 80); send(0x9C, fp.pad_note(6, 0), 0)
+    send(0x9C, fp.pad_note(3, 0), 0)
+    check(all(S.grid.get((0, st)) for st in range(3, 7)), "STEPS: hold a step + tap another in the row fills the steps between")
+    S.sp[(0, 3, midi.pPitch)] = 67
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 0, 127); send(0x9C, fp.PHYS_SCENE_LAUNCH + 1, 127)
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 1, 0); send(0x9C, fp.PHYS_SCENE_LAUNCH + 0, 0)
+    check(all(bool(S.grid.get((1, st))) == bool(S.grid.get((0, st))) for st in range(16)) and S.sp[(1, 3, midi.pPitch)] == 67,
+          "STEPS: hold channel button 1 + press button 2 copies the steps (with pitch etc.)")
+    check(F.held_chan is None and S.sel_chan == 0, "STEPS: releasing the buttons ends the copy; the first one selected its channel")
+    calls.clear()
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 2, 127); send(0x9C, fp.pad_note(3, 2), 100); send(0x9C, fp.pad_note(3, 2), 0)
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 2, 0)
+    check(not any(c[0] == "patterns.setChannelLoop" for c in calls) and S.grid.get((2, 3)),
+          "STEPS: channel loops are off by default (the pad just toggles its step)")
+    script.STEPS_CHANNEL_LOOP = True
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 2, 127); send(0x9C, fp.pad_note(3, 2), 100); send(0x9C, fp.pad_note(3, 2), 0)
+    loops = [c for c in calls if c[0] == "patterns.setChannelLoop"]
+    check(loops == [("patterns.setChannelLoop", (2, 4))], "STEPS_CHANNEL_LOOP: hold a channel button + tap step 4 = loop it at 4 steps")
+    send(0x9C, fp.pad_note(3, 2), 100); send(0x9C, fp.pad_note(3, 2), 0); send(0x9C, fp.PHYS_SCENE_LAUNCH + 2, 0)
+    check([c for c in calls if c[0] == "patterns.setChannelLoop"][-1] == ("patterns.setChannelLoop", (2, 0)), "...the same step again removes the loop")
+    script.STEPS_CHANNEL_LOOP = False
+    S.playing = True
+    _m["mixer"].getSongStepPos = lambda: 12
+    idle()
+    check(F.step_ofs == 8, "STEPS + follow: the step page follows the playhead")
+    _m["mixer"].getSongStepPos = lambda: 5
+    S.playing = False
+
+    # --- PATTERNS: queue the next pattern for the next bar ---
+    F.set_mode(script.MODES.index("PATTERNS")); F.pattern_ofs = 0
+    S.pattern, S.playing, S.loop_mode, S.pos = 1, True, midi.SM_Pat, 100
+    send(0x9C, fp.pad_note(4, 0), 100); send(0x9C, fp.pad_note(4, 0), 0); idle()
+    check(S.pattern == 1 and F.sent[(0x9C, fp.pad_note(4, 0))] == fp.CLIP_TRIGGERED,
+          "PATTERNS while playing: the pad queues pattern 5 (blinking) instead of switching mid-bar")
+    S.pos = 300; idle()
+    check(S.pattern == 1, "...still waiting in the same bar")
+    S.pos = 384 + 5; idle()
+    check(S.pattern == 5 and F.sent[(0x9C, fp.pad_note(4, 0))] == fp.CLIP_PLAYING, "...switches at the next bar")
+    send(0x9C, fp.pad_note(1, 0), 100); send(0x9C, fp.pad_note(1, 0), 0)
+    S.pos = 10; idle()
+    check(S.pattern == 2, "...or when the pattern loops back to its start")
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.pad_note(2, 0), 100); send(0x9C, fp.pad_note(2, 0), 0)
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
+    check(S.pattern == 3 and F.queued is None, "SHIFT+pad switches right away")
+    S.playing = False
+    send(0x9C, fp.pad_note(3, 0), 100); send(0x9C, fp.pad_note(3, 0), 0)
+    check(S.pattern == 4, "stopped: the pad switches right away")
 
     # meters + disconnect
     script.OnUpdateMeters()
