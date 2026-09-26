@@ -111,3 +111,7 @@ Turning a send on a strip that isn't routed yet creates the route.
 - `Akai Network - MIDI` (the second port) is separate from this script. Enable it in FL as a
   generic input to record the Force's own sequencer, or send FL's MIDI clock to it when the Force
   runs standalone.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
