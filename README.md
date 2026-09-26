@@ -3,6 +3,28 @@
 The Akai Force as a full FL Studio controller (touchscreen, pads, knob OLEDs, transport),
 the way it works with Ableton Live.
 
+## Install
+
+**📖 [User manual (PDF)](docs/Akai-Force-FL-Studio-Manual.pdf)**: setup, every mode and control, troubleshooting.
+
+1. Install Akai's **Network Driver** (inMusic Software Center → My Hardware, or akaipro.com), restart, and pair
+   your Force in the Akai Network Driver app. Windows and Intel Macs only.
+2. Install the script, whichever way is easiest:
+   - **Download** `AkaiForceLive-v1.0.0.zip` from [Releases](../../releases/latest), unzip, double-click **`install.bat`**.
+   - **PowerShell one-liner:**
+     ```powershell
+     irm https://raw.githubusercontent.com/Pyrodrifter/akai-force-fl-studio/main/install.ps1 | iex
+     ```
+   - **macOS (Intel, untested):**
+     ```sh
+     curl -fsSL https://raw.githubusercontent.com/Pyrodrifter/akai-force-fl-studio/main/install.sh | sh
+     ```
+3. In FL Studio, set up MIDI Settings as described in [FL Studio setup](#fl-studio-setup) below.
+4. On the Force: **MENU → LIVE CONTROL**.
+
+No server, VST or extra software is needed: the script runs inside FL Studio, which has its own Python.
+To uninstall, run `install.bat -Uninstall`.
+
 ## How it works
 
 The Force's "Live Control" mode uses a plain-MIDI protocol over the **Akai Network MIDI**
@@ -28,7 +50,9 @@ No VST and no separate bridge app. FL's Python controller script is the go-betwe
 |---|---|
 | `device_AkaiForce.py` | The FL Studio controller script |
 | `force_protocol.py` | Protocol constants, message builders, full control map (no dependencies) |
-| `install.ps1` | Copies both files to `Documents\Image-Line\FL Studio\Settings\Hardware\Akai Force Live` |
+| `install.ps1` / `install.bat` / `install.sh` | Installers: copy both script files into FL's Hardware folder, check for FL and the Akai driver, `-Uninstall` to remove |
+| `docs/` | The PDF manual and `build_manual.py`, which rebuilds it (needs Chrome or Edge) |
+| `requirements.txt` | Python packages for the optional desktop tools only |
 | `fl_sim.py` | Runs the script outside FL against a fake project: `python fl_sim.py` (checks), `--live` (real Force) |
 | `force_probe.py` | Low-level protocol probe / logger, no DAW involved |
 

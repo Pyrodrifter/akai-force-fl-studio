@@ -39,6 +39,8 @@ import ui
 
 import force_protocol as fp
 
+VERSION = "1.0.0"
+
 # ----------------------------------------------------------------------------
 # Settings
 # ----------------------------------------------------------------------------
@@ -208,7 +210,7 @@ class Force:
         self.held.clear()
         self.dirty = True
         device.setHasMeters()
-        print("Akai Force script loaded - pinging the Force...")
+        print("Akai Force script v%s loaded - pinging the Force..." % VERSION)
         if not device.isAssigned():
             self.hint("set the DAW Control OUTPUT port to the same number as the input")
             print("Output port not linked: give the DAW Control OUTPUT the same Port number as the input")

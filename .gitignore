@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 force_log.jsonl
 probe_console.txt
+docs/manual.html
