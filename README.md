@@ -156,6 +156,15 @@ By default the script uses the first four inserts whose names contain *send, rev
 delay, bus* or *fx*. Set `SEND_TRACKS` in the script to choose them yourself, e.g. `(20, 21)`.
 Turning a send on a strip that isn't routed yet creates the route.
 
+## Building sets with Claude
+
+The companion [flstudio-mcp fork](https://github.com/Pyrodrifter/flstudio-mcp) lets Claude
+drive FL Studio directly. It can lay out a whole Performance Mode set for the PERFORM pads:
+clips in a grid, block markers and the Start marker, per-track launch settings, notes, FL presets
+and mixer effects. Its
+[`examples/techno_live`](https://github.com/Pyrodrifter/flstudio-mcp/tree/main/examples/techno_live)
+builds a 12-row, 8-scene techno set from an empty project; launch it from PERFORM mode.
+
 ## Known limits
 
 - The mixer strips and knobs are FL **mixer inserts**; the PERFORM pad rows are **playlist
