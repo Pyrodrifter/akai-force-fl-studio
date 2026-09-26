@@ -305,7 +305,9 @@ def build():
         meters and up to 4 sends. Knobs control volume, and the knob screens show the name or the dB value.</li>
     <li><b>Plugins from the Force:</b> 8 parameters at a time (macros first), preset browsing, open the plugin window,
         bypass, and randomize-with-undo, for the selected instrument or any mixer effect.</li>
-    <li><b>Transport:</b> play, stop, record, tap tempo, metronome, undo/redo, tempo entry and song position.</li>
+    <li><b>Transport:</b> play, stop, record, song record, overdub, loop record, count-in, tap tempo (it flashes on the
+        beat), metronome, undo/redo, tempo entry and nudge, snap, song position, new pattern and markers.</li>
+    <li><b>Your own plugin pages:</b> choose and name the 8 knobs per plugin in <code>force_plugin_maps.py</code>.</li>
     </ul>""")
 
     # ------------------------------------------------------------------ 2 requirements
@@ -345,11 +347,12 @@ def build():
     <pre>irm https://raw.githubusercontent.com/Pyrodrifter/akai-force-fl-studio/main/install.ps1 | iex</pre>
     <h3>C. macOS (Intel, untested)</h3>
     <pre>curl -fsSL https://raw.githubusercontent.com/Pyrodrifter/akai-force-fl-studio/main/install.sh | sh</pre>
-    <p>The installer copies two files into FL Studio's user <i>Hardware</i> folder (it reads FL's own user-data
+    <p>The installer copies the script files into FL Studio's user <i>Hardware</i> folder (it reads FL's own user-data
     location, normally <code>Documents\\Image-Line\\FL Studio\\Settings\\Hardware\\Akai Force Live</code>), then checks
     that FL Studio and the Akai Network driver are present and prints the next steps.</p>
-    <div class="note"><b>Manual install:</b> create the folder above and copy <code>device_AkaiForce.py</code> and
-    <code>force_protocol.py</code> into it. That's all the installer does.</div>""" % (VERSION, REPO))
+    <div class="note"><b>Manual install:</b> create the folder above and copy <code>device_AkaiForce.py</code>,
+    <code>force_protocol.py</code> and <code>force_plugin_maps.py</code> into it. That's all the installer does. It
+    only copies <code>force_plugin_maps.py</code> the first time, so your own plugin pages survive updates.</div>""" % (VERSION, REPO))
     B(H2("flsetup", "Step 3: Set up FL Studio"))
     B("""<ol><li>Open <b>Options &rarr; MIDI Settings</b>. If FL was already running, click <b>Update MIDI scripts</b>.</li>
     <li>Under <b>Input</b>, select <code>Akai Network - DAW Control</code>, then set:</li></ol>""")
@@ -428,7 +431,9 @@ def build():
         ["Changing pad mode", "The new mode's name on all 8 screens (PERFORM, STEPS&hellip;)."],
         ["Holding a step (STEPS)", "That step's settings: Pitch, Vel, Release, Fine, Pan, Mod X, Mod Y."],
         ["Changing preset (PLUGIN)", "The preset name, or NEXT PRESET if the plugin doesn't report names."],
-        ["Other short messages", "AT ON/OFF (pad pressure), BYPASS/ON (plugin), RANDOM/RESTORED, FX CHAIN/CHANNEL, PERF OFF."],
+        ["Other short messages", "AT ON/OFF (pad pressure), BYPASS/ON (plugin), RANDOM/RESTORED, FX CHAIN/CHANNEL, PERF OFF, "
+                                 "window names (ASSIGN A), SNAP&hellip;, tempo after a nudge, LOCKED/UNLOCKED, FOLLOW ON/OFF, "
+                                 "COPIED, LOOP n (STEPS)."],
     ]))
     B("""<div class="tip">FL Studio's <b>hint bar</b> (top-left of FL's window) also says what just happened, for example
     <i>Force: row = solo</i> or <i>Force: randomized 8 parameters</i>.</div>""")
@@ -451,13 +456,18 @@ def build():
         ["Undo / redo", "UNDO / SHIFT+UNDO"],
         ["Change the tempo", "Tap TAP TEMPO, or type the value on the touchscreen"],
         ["Turn the metronome on", "SHIFT+TAP TEMPO"],
+        ["Show the mixer / channel rack / playlist / piano roll", "ASSIGN A (steps through them; SHIFT goes back)"],
+        ["Switch pattern / song mode", "ASSIGN B"],
+        ["Record into the song", "Arrangement record on screen"],
+        ["Change the snap", "Quantize value on screen"],
+        ["Make a new pattern / add a marker", "Insert scene on screen / SHIFT + insert scene"],
         ["Select a mixer track", "Track select row (above the pads)"],
         ["Move a mixer fader", "Knob on the mixer page, or the fader on the touchscreen mixer"],
         ["Mute / solo a mixer track", "MUTE or SOLO, then the lower button under that track"],
         ["Select a channel in the channel rack", "CHANNELS mode: SHIFT+pad. STEPS: right-hand row button. Device page: prev/next device"],
         ["Program steps", "STEPS mode"],
         ["Play the selected channel", "KEYS or DRUMS mode"],
-        ["Switch pattern", "PATTERNS mode"],
+        ["Switch pattern", "PATTERNS mode (while playing, it switches at the next bar)"],
         ["Clone a pattern", "COPY"],
         ["Quantize", "SHIFT + first lower-row button, or Quantize on screen"],
         ["Tweak a plugin", "PLUGIN mode, or the knobs on the device page"],
@@ -474,7 +484,10 @@ def build():
     B(table(["Control", "Action"], [
         ["LAUNCH", "Next pad mode (the mode name flashes on the knob screens). SHIFT+LAUNCH: previous mode."],
         ["PLAY / STOP / REC", "FL transport. PLAY lights while playing."],
-        ["TAP TEMPO", "Tap tempo. SHIFT+TAP TEMPO: metronome on/off."],
+        ["TAP TEMPO", "Tap tempo. SHIFT+TAP TEMPO: metronome on/off. Flashes on every beat while playing."],
+        ["ASSIGN A", "Show the next FL window: mixer &rarr; channel rack &rarr; playlist &rarr; piano roll (SHIFT: back). "
+                     "Change it with <code>ASSIGN_A</code> (see Settings)."],
+        ["ASSIGN B", "Pattern / song mode (lit in song mode). Change it with <code>ASSIGN_B</code>."],
         ["UNDO", "Undo. SHIFT+UNDO: redo."],
         ["&#9664; &#9654;", "Move the 8-track mixer window by one insert (SHIFT: by 8). In PERFORM they scroll blocks and in "
                             "STEPS they page the steps. There, SHIFT+&#9664;&#9654; moves the mixer."],
@@ -484,11 +497,12 @@ def build():
         ["MUTE / SOLO / REC ARM / CLIP STOP", "Choose what the lower button row does for the 8 visible inserts. "
                                               "In PERFORM they also choose what the row buttons on the right do."],
         ["SHIFT + first lower button", "Quantize the selected channel."],
-        ["COPY", "Clone the current pattern."],
+        ["COPY", "Clone the current pattern. SHIFT+COPY in PLUGIN: print the plugin's parameters for "
+                 "<code>force_plugin_maps.py</code> (chapter 8)."],
         ["SHIFT+DELETE", "In STEPS: clear the selected channel's steps in this pattern. In PLUGIN: randomize the 8 parameters."],
         ["SELECT", "Open the current plugin's window in FL (press again to close an instrument's window)."],
         ["SHIFT+SELECT", "Pad pressure &rarr; aftertouch on/off (SELECT lights when on). For KEYS and DRUMS."],
-        ["MASTER", "Select the master track."],
+        ["MASTER", "Select the master track (lit while it's selected)."],
         ["STOP ALL", "PERFORM: stop all clips. Other modes: stop the transport."],
     ]))
     B(H2("touch", "Touchscreen"))
@@ -501,8 +515,17 @@ def build():
         ["Sends A-D", "Send levels to your send/FX inserts (see Mixer)."],
         ["Tempo", "Shows FL's tempo; type a new value to change it."],
         ["Position encoder", "Moves the song position a beat per tick (SHIFT: one step)."],
-        ["Metronome / loop buttons", "Metronome on/off; loop button switches pattern/song mode."],
+        ["Metronome / loop buttons", "Metronome on/off; loop button switches pattern/song mode (lit in song mode)."],
         ["Quantize / Delete", "Same as the hardware functions above."],
+        ["Overdub", "FL's overdub recording on/off. SHIFT: loop recording. (FL can't tell scripts whether overdub is on, "
+                    "so this button doesn't light.)"],
+        ["Automation arm", "FL's count-in before recording, on/off (lit when on). FL has no script control of automation recording."],
+        ["Arrangement record", "Record into the song: switches FL to song mode, arms recording and starts playback. Again: stop recording."],
+        ["Follow", "The STEPS, PATTERNS and SONG pages follow the playhead (lit when on)."],
+        ["Device lock", "Keep the device page and PLUGIN mode on the current plugin, whatever you select next (lit when locked)."],
+        ["Nudge &minus; / +", "Tempo down / up 1 BPM (SHIFT: 0.1 BPM)."],
+        ["Quantize value", "Step FL's snap: none, 1/4 step, 1/2 step, step, 1/2 beat, beat, bar (SHIFT: back)."],
+        ["Insert scene", "New empty pattern. SHIFT: add a playlist marker at the playhead."],
         ["Device page", "8 plugin parameters with names and values, bank and device buttons."],
     ]))
 
@@ -524,15 +547,24 @@ def build():
     B(H2("m-patterns", "PATTERNS"))
     B(d["patterns"])
     B("<p>Tap a pad to select that pattern (an empty slot creates it). &#9650;&#9660; pages through 8 patterns at a time "
-      "(SHIFT: 64).</p>")
+      "(SHIFT: 64).</p>"
+      "<p><b>While playing in pattern mode</b>, a pad <b>queues</b> its pattern: it blinks, and FL switches to it at the "
+      "start of the next bar, so you stay in time. Press it again or use SHIFT+pad to switch right away. Turn this off with "
+      "<code>PATTERN_QUEUE = False</code>.</p>")
     B(H2("m-steps", "STEPS: step sequencer"))
     B(d["steps"])
     B(table(["Control", "Action"], [
         ["Tap a pad", "Toggle that step. Lit = on, dark = off, exactly as in FL's channel rack."],
         ["Hold a pad + turn knobs", "Edit that step: knob 1 pitch, 2 velocity, 3 release, 4 fine pitch, 5 pan, 6 Mod X, 7 Mod Y. "
                                     "The knob screens show the values while you hold. Editing never switches the step off."],
+        ["Tap hard / soft", "A new step takes the pad's velocity: hit harder for an accent (<code>STEP_PAD_VELOCITY</code>)."],
+        ["Hold a pad + tap another in the row", "Fill every step between the two."],
+        ["Hold a row button + press another", "Copy the first channel's steps (with pitch, velocity etc.) to the second."],
+        ["Hold a row button + tap a pad", "Loop that channel after that step; the same step again removes the loop. Off by "
+                                           "default: set <code>STEPS_CHANNEL_LOOP = True</code> (it uses an undocumented FL function)."],
         ["SHIFT + pad / row button", "Select that channel."],
-        ["&#9664;&#9654;", "Page through the pattern 8 steps at a time (up to its real length)."],
+        ["&#9664;&#9654;", "Page through the pattern 8 steps at a time (up to its real length). With Follow on, the page "
+                           "follows the playhead while playing."],
         ["&#9650;&#9660;", "Scroll channels (SHIFT: 8 at a time)."],
         ["SHIFT+DELETE", "Clear the selected channel's steps."],
     ]))
@@ -605,11 +637,29 @@ def build():
                                      "(the knob screens flash FX CHAIN or CHANNEL)."],
         ["Device on/off button", "Bypass the effect, or mute the instrument's channel. Press again to turn it back on."],
         ["SELECT (hardware)", "Open the plugin's window in FL."],
+        ["Device lock (screen)", "Stay on this plugin while you select other channels or inserts. Press again to unlock."],
         ["Focused effect window", "If an effect's window is focused in FL, the page follows it automatically."],
     ]))
     B("""<p>Only real parameters are listed: empty slots and FL's generic <i>MIDI CC</i> / <i>MIDI Channel</i> entries
     (thousands of them on VSTs) are skipped, and parameters named <i>Macro&hellip;</i> or <i>Master&hellip;</i> come first,
     so bank 1 of most synths starts with its macros.</p>""")
+    B(H2("maps", "Your own knob pages"))
+    B("""<p>For the plugins you use most, you can choose the 8 knobs yourself, in named pages, in
+    <code>force_plugin_maps.py</code> (next to the script in FL's Hardware folder):</p>
+    <pre>PLUGIN_MAPS = {
+    "Sytrus": [
+        ("Filter", ["Cutoff", "Resonance", "Env", "", "", "", "Drive", "Mix"]),
+        ("Amp", ["Attack", "Decay", "Sustain", "Release"]),
+    ],
+}</pre>
+    <ol><li>Select the plugin, go to PLUGIN mode and press <kbd>SHIFT</kbd>+<kbd>COPY</kbd>. The script prints an entry with
+    every parameter in <b>View &rarr; Script output</b>.</li>
+    <li>Paste it into <code>force_plugin_maps.py</code>, keep and reorder the parameters you want (up to 8 per page), and
+    name the pages.</li>
+    <li>In FL, click <b>Reload script</b> in Script output.</li></ol>
+    <p>Your pages come first, with their names on the screen and on the PLUGIN row buttons; the automatic banks follow
+    (<code>APPEND_ALL_PARAMS</code>). Parameters are matched by name (not case-sensitive) or by number, and a name that
+    isn't found is reported in Script output. The installer never overwrites this file.</p>""")
 
     # ------------------------------------------------------------------ 9 colours
     B(H1("colours", "9. Colours"))
@@ -632,6 +682,13 @@ def build():
         ["SEND_TRACKS", "()", "Mixer inserts for send knobs A-D, e.g. <code>(20, 21)</code>. Empty = find them by name."],
         ["SEND_KEYWORDS", "send, reverb, &hellip;", "Words that mark an insert as a send when auto-detecting."],
         ["STEPS_HIDE_PIANO_ROLL", "True", "Hide piano-roll channels' notes in STEPS."],
+        ["STEP_PAD_VELOCITY", "True", "New steps take the pad's velocity."],
+        ["STEPS_CHANNEL_LOOP", "False", "Hold a STEPS row button + tap a pad to loop that channel (undocumented FL function)."],
+        ["ASSIGN_A / ASSIGN_B", "windows / song_mode", "What ASSIGN A and B do: <i>windows, song_mode, mixer, channel_rack, "
+                                                      "playlist, piano_roll, browser, metronome, loop_record, step_edit, none</i>."],
+        ["FOLLOW", "True", "Start with Follow on."],
+        ["PATTERN_QUEUE", "True", "PATTERNS pads switch at the next bar while playing."],
+        ["NUDGE_BPM", "1.0", "Tempo change per nudge press."],
         ["MIN_BRIGHTNESS", "200", "Colours darker than this (0-255) are brightened."],
         ["SCALES", "8 scales", "The scales offered in KEYS (name + semitones)."],
         ["VOLUME_STEP / PARAM_STEP", "0.004 / 0.008", "How far a knob tick moves volume / plugin parameters."],
@@ -639,7 +696,7 @@ def build():
         ["FLASH_TIME", "1.2 s", "How long the mode name stays on the knob screens."],
         ["PING_INTERVAL / PONG_TIMEOUT", "1 s / 8 s", "Connection keep-alive and how long before it counts as lost."],
         ["HEAL_INTERVAL", "0.25 s", "Background refresh of one pad row, repairing any dropped network message."],
-        ["FX_SLOTS / MAX_PARAM_SCAN", "10 / 1024", "Effect slots per insert / plugin parameters scanned for names."],
+        ["FX_SLOTS / MAX_PARAM_SCAN", "10 / 4096", "Effect slots per insert / plugin parameters scanned for names."],
     ]))
 
     # ------------------------------------------------------------------ 11 troubleshooting
@@ -670,7 +727,9 @@ def build():
     B(table(["File", "Purpose"], [
         ["device_AkaiForce.py", "The FL Studio controller script."],
         ["force_protocol.py", "The Force's Live Control protocol: constants, message builders and the full control map. No dependencies."],
-        ["fl_sim.py", "Runs the script outside FL against a fake project. <code>python fl_sim.py</code> runs the automated checks. "
+        ["force_plugin_maps.py", "Your own knob pages per plugin (chapter 8)."],
+        ["fl_sim.py", "Runs the script outside FL against a fake project. <code>python fl_sim.py</code> runs the automated checks "
+                      "(without FL installed: <code>pip install fl-studio-api-stubs</code>). "
                       "<code>--live</code> drives a real Force. Needs <code>pip install mido python-rtmidi</code>."],
         ["force_probe.py", "Talks to the Force with no DAW: handshake, message decoder, demo layout."],
         ["install.ps1 / install.bat / install.sh", "Installers."],
@@ -722,7 +781,8 @@ def find_browser():
               "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
         if os.path.exists(p):
             return p
-    return shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("msedge")
+    return (shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("msedge")
+            or shutil.which("chromium") or shutil.which("chromium-browser"))
 
 
 if __name__ == "__main__":

@@ -28,6 +28,15 @@ for f in $FILES; do
         curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$f" -o "$DEST/$f"
     fi
 done
+# your own plugin knob pages: installed once, never overwritten
+f=force_plugin_maps.py
+if [ -f "$DEST/$f" ]; then
+    echo "Kept your $f"
+elif [ -n "$HERE" ] && [ -f "$HERE/$f" ]; then
+    cp "$HERE/$f" "$DEST/"
+else
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/$f" -o "$DEST/$f" || true
+fi
 echo "Installed to: $DEST"
 
 if [ "$(uname -m)" = "arm64" ]; then
