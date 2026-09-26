@@ -10,7 +10,7 @@ the way it works with Ableton Live.
 1. Install Akai's **Network Driver** (inMusic Software Center → My Hardware, or akaipro.com), restart, and pair
    your Force in the Akai Network Driver app. Windows and Intel Macs only.
 2. Install the script, whichever way is easiest:
-   - **Download** `AkaiForceLive-v1.0.0.zip` from [Releases](../../releases/latest), unzip, double-click **`install.bat`**.
+   - **Download** `AkaiForceLive-v1.1.0.zip` from [Releases](../../releases/latest), unzip, double-click **`install.bat`**.
    - **PowerShell one-liner:**
      ```powershell
      irm https://raw.githubusercontent.com/Pyrodrifter/akai-force-fl-studio/main/install.ps1 | iex

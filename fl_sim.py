@@ -198,6 +198,36 @@ _m["channels"].setStepParameterByIndex = lambda i, pat, st, prm, v, g=False: (
 _m["channels"].getChannelColor = lambda i, g=False: 0x5C656A if i == 9 else COLORS[i % 8]   # FL default grey
 S.perf = True
 _m["playlist"].getPerformanceModeState = lambda: S.perf
+
+# a VST-like parameter list: real params, gaps, a Macro further down, and FL's MIDI CC junk at the end
+S.params = S.params + ["", "", "Macro 1"] + [""] * 7 + ["MIDI CC #%d" % n for n in range(10)]
+S.presets, S.preset_idx = ["Init", "Bass 1", "Lead 2"], 0
+S.ch_mute, S.ev = set(), {}
+_m["plugins"].getPresetCount = lambda i, slot=-1, g=False: len(S.presets)
+_m["plugins"].nextPreset = lambda i, slot=-1, g=False: (rec("plugins.nextPreset", i, slot),
+                                                        setattr(S, "preset_idx", (S.preset_idx + 1) % len(S.presets)))[0]
+_m["plugins"].prevPreset = lambda i, slot=-1, g=False: (rec("plugins.prevPreset", i, slot),
+                                                        setattr(S, "preset_idx", (S.preset_idx - 1) % len(S.presets)))[0]
+_m["plugins"].getName = lambda i, slot=-1, flag=0, pi=0, g=False: S.presets[S.preset_idx] if flag == midi.FPN_Preset else ""
+_m["plugins"].getParamCount = lambda i, slot=-1, g=False: len(S.params)
+_m["channels"].isChannelMuted = lambda i, g=False: i in S.ch_mute
+_m["channels"].muteChannel = lambda i, v=-1, g=False: (rec("channels.muteChannel", i), S.ch_mute.symmetric_difference_update({i}))[0]
+_m["channels"].showEditor = lambda i, v=-1, g=False: rec("channels.showEditor", i)
+_m["mixer"].focusEditor = lambda i, slot: rec("mixer.focusEditor", i, slot)
+_m["mixer"].getTrackPluginId = lambda i, slot: ((i << 6) + slot) << 16
+_m["mixer"].getEventValue = lambda ev, v=0, st=1: S.ev.get(ev, 1 << 30)
+_real_rec = _m["general"].processRECEvent
+
+
+def process_rec(ev, v, flags):
+    if ev != midi.REC_Tempo:
+        rec("general.processRECEvent", ev, v, flags)
+        S.ev[ev] = v
+        return 0
+    return _real_rec(ev, v, flags)
+
+
+_m["general"].processRECEvent = process_rec
 S.song_bars = 16
 _m["transport"].getSongLength = lambda mode: S.song_bars
 _m["general"].getRecPPB = lambda: 384
@@ -467,6 +497,41 @@ def run_checks():
     check(grey not in (0, script.C_DARK) and max(fp.PALETTE_RGB[grey - 8]) > 70,
           "CHANNELS: FL's default grey channel colour is brightened instead of looking unlit")
 
+    # PLUGIN: 8 vertical faders for the selected channel's plugin
+    S.sel_chan = 0
+    send(0x9C, fp.PHYS_BUTTONS["launch"], 127); F.flash_until = time.time() - 1; idle()
+    check(script.MODES[F.mode] == "PLUGIN", "LAUNCH cycles to PLUGIN")
+    check(texts()[fp.TXT_CLIP_NAME(0, 7)] == "Macro 1" and texts()[fp.TXT_CLIP_NAME(1, 7)] == "Cutoff"
+          and not any(F.param_list.count(p) for p in range(20, 30)),
+          "PLUGIN: parameter names along the bottom, macros first, FL's MIDI CC slots skipped")
+    send(0x9C, fp.pad_note(1, 0), 100); send(0x9C, fp.pad_note(1, 0), 0); idle()
+    check(calls[-1] == ("plugins.setParamValue", (1.0, 0, 0)), "PLUGIN: top pad of column 2 sets parameter 2 to maximum")
+    check(all(F.sent[(0x9C, fp.pad_note(1, r))] == fp.CLIP_STOPPED for r in range(8)), "PLUGIN: the whole column lights at maximum")
+    send(0x9C, fp.pad_note(1, 5), 100); send(0x9C, fp.pad_note(1, 5), 0); idle()
+    check(abs(S.param_vals[(0, 0)] - 2 / 7) < 1e-6 and F.sent[(0x9C, fp.pad_note(1, 4))] == fp.CLIP_EMPTY
+          and F.sent[(0x9C, fp.pad_note(1, 5))] == fp.CLIP_STOPPED, "PLUGIN: a lower pad sets a lower value; the column lights up to it")
+    send(0x9C, fp.PHYS_BUTTONS["down"], 127); idle()
+    check(("plugins.nextPreset", (0, -1)) in calls and texts()[fp.TXT_OLED_MIXER(0)] == "BASS 1",
+          "PLUGIN: DOWN loads the next preset and flashes its name")
+    send(0x9C, fp.PHYS_BUTTONS["up"], 127)
+    check(calls[-2] == ("plugins.prevPreset", (0, -1)) or ("plugins.prevPreset", (0, -1)) in calls, "PLUGIN: UP goes back a preset")
+    send(0x9C, fp.PHYS_BUTTONS["select"], 127)
+    check(("channels.showEditor", (0,)) in calls, "SELECT opens the plugin's window in FL")
+    send(0x99, fp.DEVICE_BUTTONS["device_on"], 127)
+    check(0 in S.ch_mute, "device on/off on an instrument mutes its channel")
+    send(0x99, fp.DEVICE_BUTTONS["device_on"], 127)
+    before = dict(S.param_vals)
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.PHYS_BUTTONS["delete"], 127); send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
+    changed = [k for k in S.param_vals if S.param_vals[k] != before.get(k, 0.5)]
+    check(len(changed) >= 6, "PLUGIN: SHIFT+DELETE randomizes the 8 parameters")
+    calls.clear()
+    send(0x9C, fp.PHYS_BUTTONS["undo"], 127)
+    check(all(S.param_vals[k] == before.get(k, 0.5) for k in changed) and ("general.undoUp", ()) not in calls,
+          "PLUGIN: UNDO right after puts them back")
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 1, 127); idle()
+    check(F.param_bank == 1 and texts()[fp.TXT_CLIP_NAME(0, 7)] == "Mix", "PLUGIN: right-hand button 2 shows bank 2")
+    send(0x9C, fp.PHYS_SCENE_LAUNCH + 0, 127)
+
     # SONG: one pad per bar; markers name and colour their sections
     S.pos = 500
     send(0x9C, fp.PHYS_BUTTONS["launch"], 127); idle()
@@ -494,7 +559,8 @@ def run_checks():
     S.song_bars, S.playing = 16, False
 
     send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.PHYS_BUTTONS["launch"], 127); send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
-    check(script.MODES[F.mode] == "CHANNELS", "SHIFT+LAUNCH goes back a mode")
+    check(script.MODES[F.mode] == "PLUGIN", "SHIFT+LAUNCH goes back a mode")
+    send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x9C, fp.PHYS_BUTTONS["launch"], 127); send(0x9C, fp.PHYS_BUTTONS["shift"], 0)
 
     # transport / buttons / touchscreen
     real_start = _m["transport"].start
@@ -529,10 +595,12 @@ def run_checks():
     # device page
     S.sel_chan = 0
     send(0xBD, fp.KNOB_DEVICE + 0, 5); idle()
-    check(calls[-1][0] == "plugins.setParamValue" and calls[-1][1][1] == 0, "device knob 1 moves param 1 of selected channel")
+    check(calls[-1][0] == "plugins.setParamValue" and calls[-1][1][1] == 12,
+          "device knob 1 moves the plugin's Macro 1 (macros come first)")
     check(texts()[fp.TXT_DEVICE_NAME] == "Synth for Kick", "device name shown")
     F.flash_until = time.time() - 1; idle()
-    check(texts()[fp.TXT_OLED_DEVICE(0)] == "Cutoff", "device OLED shows param name after the flash")
+    check(texts()[fp.TXT_OLED_DEVICE(0)] == "Macro 1" and texts()[fp.TXT_OLED_DEVICE(1)] == "Cutoff",
+          "device OLEDs show parameter names after the flash")
     S.sel_track = 1
     send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x99, fp.DEVICE_BUTTONS["next_device"], 127)
     send(0x9C, fp.PHYS_BUTTONS["shift"], 0); idle()
@@ -540,7 +608,12 @@ def run_checks():
     send(0x99, fp.DEVICE_BUTTONS["next_device"], 127); idle()
     check(texts()[fp.TXT_DEVICE_NAME] == "FX3 Fruity Delay 3", "next device skips empty FX slots")
     send(0xBD, fp.KNOB_DEVICE + 1, 3)
-    check(calls[-1][0] == "plugins.setParamValue" and calls[-1][1][1:] == (1, 1), "device knob 2 moves param 2 of the FX plugin")
+    check(calls[-1][0] == "plugins.setParamValue" and calls[-1][1][1:] == (0, 1), "device knob 2 moves param 2 of the FX plugin")
+    send(0x99, fp.DEVICE_BUTTONS["device_on"], 127)
+    pid = ((1 << 6) + 2) << 16
+    check(S.ev.get(pid + midi.REC_Plug_Mute) == 0, "device on/off bypasses the effect")
+    send(0x99, fp.DEVICE_BUTTONS["device_on"], 127)
+    check(S.ev.get(pid + midi.REC_Plug_Mute) == 1 << 30, "pressing it again turns the effect back on")
     send(0x9C, fp.PHYS_BUTTONS["shift"], 127); send(0x99, fp.DEVICE_BUTTONS["prev_device"], 127)
     send(0x9C, fp.PHYS_BUTTONS["shift"], 0); idle()
     check(not F.fx_mode and texts()[fp.TXT_DEVICE_NAME].startswith("Synth for"), "SHIFT+prev device: back to the channel's plugin")

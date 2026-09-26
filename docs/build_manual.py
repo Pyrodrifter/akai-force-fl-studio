@@ -132,6 +132,22 @@ def diagrams():
             sec = [x for x in sections if x[0] <= bar][-1]
             row.append((sec[2], sec[1] if sec[0] == bar else str(bar + 1)))
         cells.append(row)
+    # PLUGIN: 8 vertical faders
+    levels = [8, 5, 3, 6, 2, 7, 4, 1]
+    pnames = ["Macro 1", "Macro 2", "Cutoff", "Reso", "Attack", "Release", "Drive", "Mix"]
+    pvals = ["100%", "57%", "29%", "71%", "14%", "86%", "43%", "0%"]
+    cells = []
+    for s in range(8):
+        r = 7 - s
+        row = []
+        for t in range(8):
+            lit = r < levels[t]
+            txt = pnames[t] if s == 7 else (pvals[t] if s == 0 else "")
+            row.append((PURPLE if lit else OFF, txt))
+        cells.append(row)
+    d["plugin"] = grid(cells, right=[(WHITE if i == 0 else DARK, "Bank %d" % (i + 1)) for i in range(8)],
+                       caption="PLUGIN: each column is one parameter of the current bank; the lit height is its value. "
+                               "Names along the bottom, values along the top.")
     d["song"] = grid(cells, right=[(DARK, "Bars %d-%d" % (s * 8 + 1, s * 8 + 8)) for s in range(8)], playing={(3, 3)},
                      caption="SONG: one pad per bar. Marker sections take the marker's colour; the current bar pulses.")
     return d
@@ -165,6 +181,7 @@ FORCE_SVG = """
     <text x="90" y="325" font-size="18">&#9654;</text><text x="60" y="350" font-size="18">&#9660;</text>
   </g>
   <text x="20" y="380" fill="#9ab" font-size="11">schematic, not to scale</text>
+  <g font-size="12" font-weight="700" text-anchor="middle">%BADGES%</g>
 </svg>"""
 
 
@@ -176,7 +193,11 @@ def force_svg():
                    for s in range(8) for t in range(8))
     scenes = "".join('<rect x="570" y="%d" width="40" height="26" rx="3" fill="#555"/>' % (262 + s * 30) for s in range(8))
     bottom = "".join('<rect x="%d" y="%d" width="40" height="10" rx="2" fill="#555"/>' % (205 + i * 45, 505 - 14) for i in range(8))
-    return (FORCE_SVG.replace("%OLEDS%", oleds).replace("%TOPROW%", top).replace("%PADS%", pads)
+    spots = [(1, 575, 35), (2, 190, 172), (3, 190, 198), (4, 190, 236), (5, 190, 330), (6, 632, 262),
+             (7, 190, 496), (8, 170, 62), (9, 125, 322), (10, 160, 122), (11, 165, 187)]
+    badges = "".join('<circle cx="%d" cy="%d" r="10" fill="#f0a030"/><text x="%d" y="%d" fill="#111">%d</text>'
+                     % (x, y, x, y + 4, n) for n, x, y in spots)
+    return (FORCE_SVG.replace("%BADGES%", badges).replace("%OLEDS%", oleds).replace("%TOPROW%", top).replace("%PADS%", pads)
             .replace("%SCENES%", scenes).replace("%BOTTOM%", bottom))
 
 
@@ -277,11 +298,13 @@ def build():
     knobs, buttons and touches.</p>""")
     B(H2("features", "What you get"))
     B("""<ul>
-    <li><b>Seven pad modes:</b> PERFORM (clip launching), PATTERNS, STEPS (step sequencer with per-step editing),
-        KEYS (with scales), DRUMS, CHANNELS and SONG (jump to any bar).</li>
+    <li><b>Eight pad modes:</b> PERFORM (clip launching), PATTERNS, STEPS (step sequencer with per-step editing),
+        KEYS (with scales), DRUMS, CHANNELS, PLUGIN (play with any plugin's parameters and presets) and SONG
+        (jump to any bar).</li>
     <li><b>Mixer on the Force:</b> 8 mixer inserts at a time with names, colours, volume, pan, mute, solo, arm,
         meters and up to 4 sends. Knobs control volume, and the knob screens show the name or the dB value.</li>
-    <li><b>Device page:</b> 8 parameters of the selected channel's plugin or any mixer effect, in banks.</li>
+    <li><b>Plugins from the Force:</b> 8 parameters at a time (macros first), preset browsing, open the plugin window,
+        bypass, and randomize-with-undo, for the selected instrument or any mixer effect.</li>
     <li><b>Transport:</b> play, stop, record, tap tempo, metronome, undo/redo, tempo entry and song position.</li>
     </ul>""")
 
@@ -350,17 +373,100 @@ def build():
     <code>Akai Network - DAW Control</code> input back to <i>(generic controller)</i>.</p>""")
 
     # ------------------------------------------------------------------ 4 quick start
-    B(H1("quick", "4. Quick start"))
-    B("""<ol>
-    <li>Connect as above. The knob screens flash the current pad mode.</li>
-    <li>Press <kbd>LAUNCH</kbd> to cycle pad modes: PERFORM &rarr; PATTERNS &rarr; STEPS &rarr; KEYS &rarr; DRUMS
-        &rarr; CHANNELS &rarr; SONG. <kbd>SHIFT</kbd>+<kbd>LAUNCH</kbd> goes back.</li>
-    <li>Turn a knob to change a mixer insert's volume; touch it to see the value in dB.</li>
-    <li>In <b>STEPS</b>, tap pads to program a beat on the current pattern, then press <kbd>PLAY</kbd>.</li>
-    <li>In <b>SONG</b>, tap any bar to jump there while the song plays, which is handy for chopping and rearranging live.</li>
-    </ol>""")
+    B(H1("quick", "4. Your first session"))
+    B("""<p>New to this script? Start here. This chapter walks through the Force the way an FL Studio user thinks
+    about it: what each part controls in FL, how to move around, and how to tell where you are.</p>""")
+    B(H2("tour", "A tour of the Force, in FL Studio terms"))
     B(force_svg())
-    B('<p style="text-align:center;font-size:9pt;color:#666">The controls referred to in this manual.</p>')
+    B(table(["#", "Part of the Force", "What it does in FL Studio"], [
+        ["1", "Touchscreen", "Shows FL's mixer tracks, the current pad grid with names, and the plugin page. Touch works: "
+                             "faders, buttons and grid cells all control FL."],
+        ["2", "Knob screens (OLEDs)", "Tell you what each knob controls right now. They also flash the pad mode's name "
+                                     "whenever you change modes (see below)."],
+        ["3", "8 knobs", "Mixer volume of 8 FL mixer tracks, or 8 parameters of a plugin, depending on the knob page."],
+        ["4", "Track select row", "Selects that FL mixer track (like clicking it in FL's mixer). The selected one lights white."],
+        ["5", "8&times;8 pads", "Depends on the <b>pad mode</b>: clips, patterns, steps, notes, drums, channels, plugin faders or song bars."],
+        ["6", "Row buttons (right of the pads)", "An extra action for each pad row, different per mode (scales in KEYS, "
+                                                  "banks in PLUGIN, stop a track in PERFORM&hellip;)."],
+        ["7", "Lower button row", "Mute / solo / arm the FL mixer track above it (choose with MUTE, SOLO, REC ARM, CLIP STOP)."],
+        ["8", "PLAY / STOP / REC", "FL's transport, exactly like the buttons at the top of FL."],
+        ["9", "Arrow buttons", "Move around: which 8 mixer tracks you see (&#9664;&#9654;) and the rows of the current mode (&#9650;&#9660;)."],
+        ["10", "SHIFT / LAUNCH", "LAUNCH changes the pad mode. SHIFT unlocks second functions (shown as SHIFT+&hellip; in this manual)."],
+        ["11", "MUTE / SOLO / REC ARM / CLIP STOP, COPY, DELETE, SELECT, UNDO&hellip;", "Editing helpers: see chapter 5."],
+    ]))
+    B(H2("screens", "Getting to each screen"))
+    B("""<p>The Force draws three main pages. Switch between them with the <b>icons along the left edge of the
+    touchscreen</b>:</p>""")
+    B(table(["Icon", "Page", "What you see"], [
+        ["Grid of dots (top)", "Clip grid", "The current pad mode on screen: every pad with its name and colour. Tap cells like pads."],
+        ["Vertical bars (middle)", "Mixer", "8 FL mixer tracks: faders, pan, meters, mute/solo/arm and sends."],
+        ["Rectangle (bottom)", "Device", "The current plugin: its name, preset, bank and 8 parameter faders."],
+    ]))
+    B("""<p>The <b>knobs</b> have pages too: on the mixer page they set mixer volume, on the device page they set plugin
+    parameters. Use the Force's <kbd>KNOBS</kbd> button (or its screen) to switch. The knob screens always show which
+    you're on: track names mean mixer, parameter names mean plugin.</p>""")
+    B(H2("which-mode", "Which pad mode am I in?"))
+    B("""<p>Press <kbd>LAUNCH</kbd> to go to the next pad mode and <kbd>SHIFT</kbd>+<kbd>LAUNCH</kbd> to go back. The order is
+    <b>PERFORM &rarr; PATTERNS &rarr; STEPS &rarr; KEYS &rarr; DRUMS &rarr; CHANNELS &rarr; PLUGIN &rarr; SONG</b>, then round again.
+    Every time you change mode, <b>all 8 knob screens flash the mode's name for about a second</b>. After that, the
+    labels in the right-hand column of the clip grid tell you where you are:</p>""")
+    B(table(["Mode", "Knob screens flash", "Right-hand column shows", "Pads show"], [
+        ["PERFORM", "PERFORM", "Playlist track names", "Performance-Mode clips (or <i>Turn on Perf Mode</i>)"],
+        ["PATTERNS", "PATTERNS", "Pat 1-8, Pat 9-16&hellip;", "One pad per pattern"],
+        ["STEPS", "STEPS", "Channel names", "Steps of the current pattern"],
+        ["KEYS", "KEYS", "Scale names (Chromatic, Major&hellip;)", "Note names (C3, D3&hellip;)"],
+        ["DRUMS", "DRUMS", "Note names", "Four coloured 4&times;4 drum banks"],
+        ["CHANNELS", "CHANNELS", "Ch 1-8, Ch 9-16&hellip;", "Channel names"],
+        ["PLUGIN", "PLUGIN", "Bank 1, Bank 2&hellip;", "8 vertical faders with parameter names"],
+        ["SONG", "SONG", "Bars 1-8, Bars 9-16&hellip;", "Bar numbers / marker names"],
+    ]))
+    B(H2("oleds", "What the knob screens tell you"))
+    B(table(["When", "Knob screens show"], [
+        ["Normally (mixer knobs)", "The name of the FL mixer track each knob controls, with a volume bar."],
+        ["Touching a knob", "That track's volume in dB (e.g. <i>-3.2 dB</i>), until you let go."],
+        ["Device page", "Plugin parameter names; the value while you touch the knob."],
+        ["Changing pad mode", "The new mode's name on all 8 screens (PERFORM, STEPS&hellip;)."],
+        ["Holding a step (STEPS)", "That step's settings: Pitch, Vel, Release, Fine, Pan, Mod X, Mod Y."],
+        ["Changing preset (PLUGIN)", "The preset name, or NEXT PRESET if the plugin doesn't report names."],
+        ["Other short messages", "AT ON/OFF (pad pressure), BYPASS/ON (plugin), RANDOM/RESTORED, FX CHAIN/CHANNEL, PERF OFF."],
+    ]))
+    B("""<div class="tip">FL Studio's <b>hint bar</b> (top-left of FL's window) also says what just happened, for example
+    <i>Force: row = solo</i> or <i>Force: randomized 8 parameters</i>.</div>""")
+    B(H2("first-beat", "Your first five minutes"))
+    B("""<ol>
+    <li><b>Mixer:</b> turn knob 1. FL mixer track 1's fader moves. Touch the knob to read the dB value. Press &#9654; to see
+        the next 8 tracks.</li>
+    <li><b>Beat:</b> press <kbd>LAUNCH</kbd> until the screens say <b>STEPS</b>. Row 1 is your first channel (e.g. a kick):
+        tap pads 1 and 5 to add steps, then press <kbd>PLAY</kbd>. The lower button row shows the playhead moving.</li>
+    <li><b>Tweak a step:</b> hold one of those pads and turn knob 2 to change its velocity; knob 1 changes its pitch.</li>
+    <li><b>Play notes:</b> <kbd>LAUNCH</kbd> to <b>KEYS</b>, pick a channel with a synth in FL (or with SHIFT+pad in
+        CHANNELS), choose <b>Minor</b> with the second row button, and play. Every pad is now in key.</li>
+    <li><b>Sound design:</b> <kbd>LAUNCH</kbd> to <b>PLUGIN</b>. Each column is a synth parameter: tap high or low to set it.
+        &#9660; tries the next preset; <kbd>SELECT</kbd> opens the synth's window in FL; SHIFT+DELETE randomizes, UNDO takes it back.</li>
+    <li><b>Arrange:</b> <kbd>LAUNCH</kbd> to <b>SONG</b>, press <kbd>PLAY</kbd>, and tap any bar to jump there.</li>
+    </ol>""")
+    B(H2("cheat", "FL Studio &rarr; Force cheat sheet"))
+    B(table(["I want to&hellip; (in FL)", "On the Force"], [
+        ["Play / stop / record", "PLAY / STOP / REC"],
+        ["Undo / redo", "UNDO / SHIFT+UNDO"],
+        ["Change the tempo", "Tap TAP TEMPO, or type the value on the touchscreen"],
+        ["Turn the metronome on", "SHIFT+TAP TEMPO"],
+        ["Select a mixer track", "Track select row (above the pads)"],
+        ["Move a mixer fader", "Knob on the mixer page, or the fader on the touchscreen mixer"],
+        ["Mute / solo a mixer track", "MUTE or SOLO, then the lower button under that track"],
+        ["Select a channel in the channel rack", "CHANNELS mode: SHIFT+pad. STEPS: right-hand row button. Device page: prev/next device"],
+        ["Program steps", "STEPS mode"],
+        ["Play the selected channel", "KEYS or DRUMS mode"],
+        ["Switch pattern", "PATTERNS mode"],
+        ["Clone a pattern", "COPY"],
+        ["Quantize", "SHIFT + first lower-row button, or Quantize on screen"],
+        ["Tweak a plugin", "PLUGIN mode, or the knobs on the device page"],
+        ["Change a plugin's preset", "PLUGIN mode &#9650;&#9660;, or SHIFT + prev/next bank on the device page"],
+        ["Open a plugin's window", "SELECT"],
+        ["Bypass a mixer effect", "Device page on/off button (in FX-chain mode)"],
+        ["Launch clips live", "PERFORM mode (turn on Performance Mode first)"],
+        ["Jump around the song", "SONG mode, or the position control on screen"],
+    ]))
 
     # ------------------------------------------------------------------ 5 controls
     B(H1("controls", "5. Controls"))
@@ -379,7 +485,8 @@ def build():
                                               "In PERFORM they also choose what the row buttons on the right do."],
         ["SHIFT + first lower button", "Quantize the selected channel."],
         ["COPY", "Clone the current pattern."],
-        ["SHIFT+DELETE", "In STEPS: clear the selected channel's steps in this pattern."],
+        ["SHIFT+DELETE", "In STEPS: clear the selected channel's steps in this pattern. In PLUGIN: randomize the 8 parameters."],
+        ["SELECT", "Open the current plugin's window in FL (press again to close an instrument's window)."],
         ["SHIFT+SELECT", "Pad pressure &rarr; aftertouch on/off (SELECT lights when on). For KEYS and DRUMS."],
         ["MASTER", "Select the master track."],
         ["STOP ALL", "PERFORM: stop all clips. Other modes: stop the transport."],
@@ -449,6 +556,22 @@ def build():
     B(d["channels"])
     B("<p>Each pad triggers one channel-rack channel. Perfect for kits built from separate samples. SHIFT+pad "
       "selects the channel (the selected one blinks). &#9650;&#9660; pages by 8.</p>")
+    B(H2("m-plugin", "PLUGIN: play with any plugin"))
+    B(d["plugin"])
+    B("""<p>PLUGIN turns the pads into 8 faders for the plugin you're working on: the <b>selected channel's instrument</b>,
+    or, in FX-chain mode, an <b>effect on the selected mixer track</b>. The most useful parameters come first: macros
+    and master controls.</p>""")
+    B(table(["Control", "Action"], [
+        ["Pad", "Set that column's parameter to that height (bottom = minimum, top = maximum)."],
+        ["Knobs (device page)", "Fine control of the same 8 parameters."],
+        ["Row buttons (right)", "Choose parameter bank 1-8. SHIFT+&#9650;&#9660; steps through banks beyond 8."],
+        ["&#9650; &#9660;", "Previous / next <b>preset</b>. The knob screens flash its name."],
+        ["&#9664; &#9654;", "Previous / next plugin (the next channel, or the next effect slot in FX-chain mode)."],
+        ["SELECT", "Open the plugin's window in FL so you can see what you're changing."],
+        ["SHIFT+DELETE", "Randomize the 8 parameters on screen. Press <kbd>UNDO</kbd> straight after to put them back."],
+    ]))
+    B("""<div class="note">FL's own undo doesn't record plugin knob moves, so the script keeps a copy of the values before a
+    randomize. Only the <b>last</b> randomize can be undone, and only until you touch another parameter.</div>""")
     B(H2("m-song", "SONG"))
     B(d["song"])
     B("""<p>Each pad is one bar of the song. Tap to jump there. The current bar pulses and the page follows playback.
@@ -475,12 +598,18 @@ def build():
     B(H1("device", "8. Device page (plugins)"))
     B(table(["Control", "Action"], [
         ["Knobs (device)", "8 parameters of the current plugin. The knob screens show names, or values while touched."],
-        ["Prev / next bank", "Next 8 parameters (the bank number shows as <i>Bank 2/12</i>)."],
+        ["Prev / next bank", "Next 8 parameters (the bank number shows as <i>Bank 2/12</i>, plus the preset name when the plugin reports one)."],
+        ["SHIFT + prev/next bank", "Previous / next preset."],
         ["Prev / next device", "Select the previous/next channel, or the previous/next effect slot in FX-chain mode."],
-        ["SHIFT + prev/next device", "Switch between the selected channel's plugin and the selected mixer insert's effect chain."],
+        ["SHIFT + prev/next device", "Switch between the selected channel's plugin and the selected mixer insert's effect chain "
+                                     "(the knob screens flash FX CHAIN or CHANNEL)."],
+        ["Device on/off button", "Bypass the effect, or mute the instrument's channel. Press again to turn it back on."],
+        ["SELECT (hardware)", "Open the plugin's window in FL."],
         ["Focused effect window", "If an effect's window is focused in FL, the page follows it automatically."],
     ]))
-    B("<p>Only named parameters are listed (VST plugins report thousands of empty slots).</p>")
+    B("""<p>Only real parameters are listed: empty slots and FL's generic <i>MIDI CC</i> / <i>MIDI Channel</i> entries
+    (thousands of them on VSTs) are skipped, and parameters named <i>Macro&hellip;</i> or <i>Master&hellip;</i> come first,
+    so bank 1 of most synths starts with its macros.</p>""")
 
     # ------------------------------------------------------------------ 9 colours
     B(H1("colours", "9. Colours"))
@@ -498,6 +627,8 @@ def build():
       "text editor, then click <b>Reload script</b> in View &rarr; Script output. Re-running the installer overwrites them.</p>")
     B(table(["Setting", "Default", "What it does"], [
         ["PAD_AFTERTOUCH", "False", "Start with pad pressure &rarr; aftertouch on (also toggled live with SHIFT+SELECT)."],
+        ["PARAM_FIRST", "macro, master", "Parameters whose names start with these come first on the device page and in PLUGIN."],
+        ["PARAM_SKIP", "MIDI CC, MIDI Channel", "Parameter names that are never shown."],
         ["SEND_TRACKS", "()", "Mixer inserts for send knobs A-D, e.g. <code>(20, 21)</code>. Empty = find them by name."],
         ["SEND_KEYWORDS", "send, reverb, &hellip;", "Words that mark an insert as a send when auto-detecting."],
         ["STEPS_HIDE_PIANO_ROLL", "True", "Hide piano-roll channels' notes in STEPS."],
@@ -528,6 +659,9 @@ def build():
         ["Hint bar: <i>FL refused that just now</i>", "FL was busy (e.g. loading a project). Press again."],
         ["Brief disconnect while loading big projects", "Normal. It reconnects by itself within a few seconds."],
         ["Two Forces/MPCs on the network", "Only one can use Live Control with the computer at a time."],
+        ["Preset name shows NEXT PRESET", "That plugin doesn't tell FL its preset names (many VSTs don't). The preset still changes."],
+        ["PLUGIN says <i>No plugin selected</i>", "The selected channel is a plain sampler or empty. Select a channel with an "
+            "instrument plugin, or switch to FX-chain mode (SHIFT + next device) for mixer effects."],
         ["Apple Silicon Mac", "Not supported: Akai's network driver is Windows / Intel-Mac only."],
     ]))
 

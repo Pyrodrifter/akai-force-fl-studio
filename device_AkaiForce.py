@@ -19,10 +19,12 @@ Pad modes (LAUNCH button cycles, SHIFT+LAUNCH goes back):
   KEYS      keyboard -> selected channel; right-hand buttons pick a scale
   DRUMS     4x4 quadrants from C3 (FPC / Slicex / drum plugins) -> selected channel
   CHANNELS  each pad triggers a channel-rack channel (sample kits)
-  SONG      pads = playlist markers; press to jump there
+  PLUGIN    8 vertical faders for the current plugin's parameters; presets on up/down
+  SONG      one pad per bar of the song; press to jump there
 """
 
 import math
+import random
 import time
 
 import arrangement
@@ -39,7 +41,7 @@ import ui
 
 import force_protocol as fp
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ----------------------------------------------------------------------------
 # Settings
@@ -51,7 +53,10 @@ VOLUME_STEP = 0.004          # mixer volume per knob tick (0..1 range)
 PARAM_STEP = 0.008           # plugin parameter per knob tick
 FINE = 0.2                   # SHIFT multiplier for knobs
 PAD_AFTERTOUCH = False       # pass pad pressure on as poly aftertouch in note modes
-MAX_PARAM_SCAN = 1024        # plugin params scanned for names (VSTs report thousands)
+MAX_PARAM_SCAN = 4096        # plugin params scanned for names (VSTs report thousands)
+PARAM_SKIP = ("MIDI CC", "MIDI Channel")   # FL's generic per-channel MIDI slots on VSTs: never on the knobs
+PARAM_FIRST = ("macro", "master")          # parameters whose names start like this come first
+SLOT_ON = 1 << 30            # FL's event value for an enabled mixer effect slot (0 = bypassed)
 FLASH_TIME = 1.2             # seconds the mode name stays on the knob OLEDs
 HEAL_INTERVAL = 0.25         # resend one pad row this often, in case network MIDI dropped something
 SEND_TRACKS = ()             # mixer inserts for the send knobs A-D, e.g. (20, 21); empty = auto-detect
@@ -60,7 +65,7 @@ FX_SLOTS = 10                # mixer effect slots per insert
 MIN_BRIGHTNESS = 200         # FL colours darker than this (0-255) are brightened so pads don't look off
 STEPS_HIDE_PIANO_ROLL = True # STEPS: don't show piano-roll channels' note starts as steps (FL doesn't either)
 
-MODES = ("PERFORM", "PATTERNS", "STEPS", "KEYS", "DRUMS", "CHANNELS", "SONG")
+MODES = ("PERFORM", "PATTERNS", "STEPS", "KEYS", "DRUMS", "CHANNELS", "PLUGIN", "SONG")
 SCALES = (                   # KEYS mode: right-hand buttons 1-8 pick one of these
     ("Chromatic", ()),
     ("Major", (0, 2, 4, 5, 7, 9, 11)),
@@ -149,6 +154,9 @@ class Force:
         self.sends_time = 0.0
         self.held_step = None     # steps: [channel, step, edited] while a step pad is held
         self.pr_cache = {}        # (pattern, channel) -> (is_piano_roll, time)
+        self.pv = None            # plugin mode: (target, params, values, names, value texts, colour)
+        self.rand_snapshot = None  # plugin mode: values before the last randomize, for UNDO
+        self.preset_text = ""
 
     # ------------------------------------------------------------------ output
     def _out(self, status, d1, d2, force=False):
@@ -570,6 +578,15 @@ class Force:
             else:
                 color = KEY_WHITE if degree in (2, 4, 5, 7, 9, 11) else KEY_BLACK
             return color, state, note_name(n)
+        if mode == "PLUGIN":
+            # 8 vertical faders: column = parameter of the current bank, height = value
+            pv = self.pv
+            if not pv or t >= len(pv[1]):
+                return 0, fp.CLIP_EMPTY, ""
+            r = 7 - s
+            lit = r == 0 or pv[2][t] >= r / 7.0 - 0.02
+            name = pv[3][t] if s == 7 else (pv[4][t] if s == 0 else "")
+            return (pv[5] if lit else 0), (fp.CLIP_STOPPED if lit else fp.CLIP_EMPTY), name
         # CHANNELS
         c = self.chan_ofs + s * 8 + t
         if c >= channels.channelCount():
@@ -630,6 +647,8 @@ class Force:
 
     def refresh_grid(self):
         mode = MODES[self.mode]
+        if mode == "PLUGIN":
+            self.pv = self.plugin_view()
         for t in range(8):
             for s in range(8):
                 self.send_cell(t, s)
@@ -670,6 +689,15 @@ class Force:
             elif mode == "SONG":
                 first = self.song_ofs + s * 8 + 1
                 label, col = ("Bars %d-%d" % (first, first + 7)) if first <= self.song_bars() else "", C_DARK
+            elif mode == "PLUGIN":
+                bank = (self.param_bank // 8) * 8 + s
+                nbanks = (len(self.param_list) + 7) // 8 if self.pv else 0
+                if bank < nbanks:
+                    label = "Bank %d" % (bank + 1)
+                    col = C_WHITE if bank == self.param_bank else C_DARK
+                    led = fp.COLOR_ON if bank == self.param_bank else C_DARK
+                else:
+                    label, col = ("No plugin selected" if s == 0 and not self.pv else ""), 0
             else:
                 first = self.chan_ofs + s * 8 + 1
                 label, col = "Ch %d-%d" % (first, first + 7), C_DARK
@@ -726,8 +754,15 @@ class Force:
         if key != self.param_cache_key:
             self.param_cache_key = key
             self.param_bank = 0
+            self.preset_text = ""
             count = min(plugins.getParamCount(target[0], target[1]), MAX_PARAM_SCAN)
-            self.param_list = [p for p in range(count) if plugins.getParamName(p, target[0], target[1]).strip()]
+            names = {}
+            for p in range(count):
+                n = plugins.getParamName(p, target[0], target[1]).strip()
+                if n and not n.startswith(PARAM_SKIP):
+                    names[p] = n
+            first = [p for p, n in names.items() if n.lower().startswith(PARAM_FIRST)]
+            self.param_list = first + [p for p in names if p not in set(first)]
         return name
 
     def bank_params(self):
@@ -746,7 +781,8 @@ class Force:
             nbanks = max(1, (len(self.param_list) + 7) // 8)
             self.param_bank = clamp(self.param_bank, 0, nbanks - 1)
             self.text(fp.TXT_DEVICE_NAME, ("FX%d %s" % (target[1] + 1, name)) if target[1] >= 0 else name)
-            self.text(fp.TXT_DEVICE_BANK, "Bank %d/%d" % (self.param_bank + 1, nbanks))
+            preset = self.preset_name(target)
+            self.text(fp.TXT_DEVICE_BANK, "Bank %d/%d%s" % (self.param_bank + 1, nbanks, ("  " + preset) if preset else ""))
             bank = self.bank_params()
         if self.fx_mode:
             self.cc(fp.CH_DEVICE, fp.DEVICE_COUNT_CC, FX_SLOTS)
@@ -754,7 +790,7 @@ class Force:
         else:
             self.cc(fp.CH_DEVICE, fp.DEVICE_COUNT_CC, min(channels.channelCount(), 127))
             self.cc(fp.CH_DEVICE, fp.DEVICE_INDEX_CC, clamp(channels.selectedChannel(), 0, 127))
-        self.note(fp.CH_DEVICE, fp.DEVICE_BUTTONS["device_on"], 127 if target else 0)
+        self.note(fp.CH_DEVICE, fp.DEVICE_BUTTONS["device_on"], 127 if target and self.target_enabled(target) else 0)
         for i in range(8):
             if i < len(bank):
                 p = bank[i]
@@ -859,6 +895,11 @@ class Force:
                 bar = self.song_ofs + s * 8 + t
                 if bar < self.song_bars():
                     self.jump_bar(bar)
+            elif mode == "PLUGIN":
+                pv = self.plugin_view()
+                if pv and t < len(pv[1]):
+                    plugins.setParamValue((7 - s) / 7.0, pv[1][t], pv[0][0], pv[0][1])
+                    self.rand_snapshot = None
             elif mode == "CHANNELS":
                 c = self.chan_ofs + s * 8 + t
                 if c < channels.channelCount():
@@ -923,7 +964,10 @@ class Force:
             elif d1 == b["tap_tempo"]:
                 transport.globalTransport(midi.FPT_Metronome if self.shift else midi.FPT_TapTempo, 1)
             elif d1 == b["undo"]:
-                general.undoDown() if self.shift else general.undoUp()
+                if self.shift:
+                    general.undoDown()
+                elif not self.undo_randomize():
+                    general.undoUp()
             elif d1 == b["launch"]:
                 self.set_mode(self.mode + (-1 if self.shift else 1))
             elif d1 == b["stop_all"]:
@@ -941,6 +985,8 @@ class Force:
             elif d1 == b["select"] and self.shift:
                 self.aftertouch = not self.aftertouch
                 self.flash("AT ON" if self.aftertouch else "AT OFF")
+            elif d1 == b["select"]:
+                self.open_editor()
             elif d1 in ASSIGN_MODES:
                 self.assign = ASSIGN_MODES[d1]
                 self.hint("row = " + self.assign)
@@ -949,12 +995,14 @@ class Force:
                 if MODES[self.mode] == "PERFORM" and not self.shift:
                     self.scene_ofs = max(0, self.scene_ofs + direction)       # scroll blocks
                     self.show_zone()
+                elif MODES[self.mode] == "PLUGIN" and not self.shift:
+                    self.step_device(direction)
                 elif MODES[self.mode] == "STEPS" and not self.shift:
                     last_page = max(0, self.pattern_steps() - 8)
                     self.step_ofs = clamp(self.step_ofs + direction * 8, 0, last_page)
                     self.hint("steps %d-%d" % (self.step_ofs + 1, self.step_ofs + 8))
                 else:
-                    step = 1 if MODES[self.mode] in ("PERFORM", "STEPS") else (8 if self.shift else 1)
+                    step = 1 if MODES[self.mode] in ("PERFORM", "STEPS", "PLUGIN") else (8 if self.shift else 1)
                     self.track_ofs = clamp(self.track_ofs + direction * step, 0, self.max_track_ofs())
                     self.show_mixer_zone()
             elif d1 in (b["up"], b["down"]):
@@ -985,17 +1033,20 @@ class Force:
         elif ch == fp.CH_DEVICE:
             db = fp.DEVICE_BUTTONS
             if d1 in (db["prev_bank"], db["next_bank"]):
-                self.param_bank = max(0, self.param_bank + (1 if d1 == db["next_bank"] else -1))
+                direction = 1 if d1 == db["next_bank"] else -1
+                if self.shift:
+                    self.step_preset(direction)
+                else:
+                    self.param_bank = max(0, self.param_bank + direction)
             elif d1 in (db["prev_device"], db["next_device"]):
                 direction = 1 if d1 == db["next_device"] else -1
                 if self.shift:
                     self.fx_mode = not self.fx_mode
                     self.flash("FX CHAIN" if self.fx_mode else "CHANNEL")
-                elif self.fx_mode:
-                    self.step_fx_slot(direction)
                 else:
-                    c = clamp(channels.selectedChannel() + direction, 0, channels.channelCount() - 1)
-                    channels.selectOneChannel(c)
+                    self.step_device(direction)
+            elif d1 == db["device_on"]:
+                self.toggle_target()
         elif ch == fp.CH_GLOBAL:
             g = fp.GLOBAL_BUTTONS
             if d1 == g["metronome"]:
@@ -1117,9 +1168,11 @@ class Force:
             self.hint("quantized " + channels.getChannelName(ch))
 
     def delete(self):
-        """SHIFT+DELETE in STEPS clears the selected channel's steps in this pattern."""
+        """SHIFT+DELETE: STEPS clears the selected channel's steps; PLUGIN randomizes the bank."""
         ch = channels.selectedChannel(True)
-        if MODES[self.mode] == "STEPS" and self.shift and ch >= 0:
+        if MODES[self.mode] == "PLUGIN" and self.shift:
+            self.randomize()
+        elif MODES[self.mode] == "STEPS" and self.shift and ch >= 0:
             for step in range(self.pattern_steps()):
                 if channels.getGridBit(ch, step):
                     channels.setGridBit(ch, step, False)
@@ -1139,6 +1192,11 @@ class Force:
         elif mode == "STEPS":
             top = max(0, channels.channelCount() - 8)
             self.step_chan_ofs = clamp(self.step_chan_ofs + direction * (8 if big else 1), 0, top)
+        elif mode == "PLUGIN":
+            if big:
+                self.param_bank = max(0, self.param_bank + direction)
+            else:
+                self.step_preset(direction)
         elif mode == "SONG":
             step = 64 if big else 8
             self.song_ofs = clamp(self.song_ofs + direction * step, 0, max(0, self.song_bars() - 8))
@@ -1225,6 +1283,112 @@ class Force:
         elif mode == "KEYS":
             self.scale = s
             self.flash("%s %s" % (note_name(self.key_base)[:-1], SCALES[s][0]))
+        elif mode == "PLUGIN":
+            bank = (self.param_bank // 8) * 8 + s
+            if bank < (len(self.param_list) + 7) // 8:
+                self.param_bank = bank
+
+    # ----------------------------------------------------------------- plugins
+    def plugin_view(self):
+        target = self.device_target()
+        if target is None:
+            return None
+        self.params(target)
+        nbanks = max(1, (len(self.param_list) + 7) // 8)
+        self.param_bank = clamp(self.param_bank, 0, nbanks - 1)
+        bank = self.bank_params()
+        i, slot = target
+        color = self.color_of(channels.getChannelColor(i) if slot < 0 else mixer.getTrackColor(i))
+        values = [plugins.getParamValue(p, i, slot) for p in bank]
+        names = [plugins.getParamName(p, i, slot) for p in bank]
+        texts = [plugins.getParamValueString(p, i, slot) for p in bank]
+        return target, bank, values, names, texts, color
+
+    def preset_name(self, target):
+        try:
+            name = plugins.getName(target[0], target[1], midi.FPN_Preset)
+        except (AttributeError, TypeError):
+            name = ""
+        return name or self.preset_text
+
+    def step_preset(self, direction):
+        target = self.device_target()
+        if target is None:
+            self.hint("select a channel with a plugin first")
+            return
+        if plugins.getPresetCount(target[0], target[1]) <= 0:
+            self.hint("this plugin has no presets FL can switch")
+            return
+        (plugins.nextPreset if direction > 0 else plugins.prevPreset)(target[0], target[1])
+        self.preset_text = ""
+        name = self.preset_name(target)
+        self.preset_text = name or ("next preset" if direction > 0 else "previous preset")
+        self.flash(self.preset_text.upper()[:12])
+        self.rand_snapshot = None
+
+    def step_device(self, direction):
+        """Previous/next plugin: the next channel, or the next effect slot in FX-chain mode."""
+        if self.fx_mode:
+            self.step_fx_slot(direction)
+        else:
+            c = clamp(channels.selectedChannel() + direction, 0, channels.channelCount() - 1)
+            channels.selectOneChannel(c)
+            self.hint("channel: " + channels.getChannelName(c))
+
+    def open_editor(self):
+        """Show the plugin window in FL (instruments toggle open/closed)."""
+        target = self.device_target()
+        if target is None:
+            self.hint("no plugin to open")
+        elif target[1] < 0:
+            channels.showEditor(target[0])
+        else:
+            mixer.focusEditor(target[0], target[1])
+
+    def target_enabled(self, target):
+        i, slot = target
+        if slot < 0:
+            return not channels.isChannelMuted(i)
+        try:
+            return mixer.getEventValue(mixer.getTrackPluginId(i, slot) + midi.REC_Plug_Mute) > 0
+        except (AttributeError, TypeError):
+            return True
+
+    def toggle_target(self):
+        """Device on/off: bypass an effect, or mute an instrument's channel."""
+        target = self.device_target()
+        if target is None:
+            return
+        i, slot = target
+        on = self.target_enabled(target)
+        if slot < 0:
+            channels.muteChannel(i)
+        else:
+            general.processRECEvent(mixer.getTrackPluginId(i, slot) + midi.REC_Plug_Mute, 0 if on else SLOT_ON,
+                                    midi.REC_Control | midi.REC_UpdateControl)
+        self.flash("BYPASS" if on else "ON")
+
+    def randomize(self):
+        pv = self.plugin_view()
+        if not pv:
+            return
+        (i, slot), bank = pv[0], pv[1]
+        self.rand_snapshot = (pv[0], [(p, plugins.getParamValue(p, i, slot)) for p in bank])
+        for p in bank:
+            plugins.setParamValue(random.random(), p, i, slot)
+        self.flash("RANDOM")
+        self.hint("randomized 8 parameters - press UNDO to put them back")
+
+    def undo_randomize(self):
+        """UNDO right after a randomize restores those parameters (plugin moves aren't in FL's undo)."""
+        if not self.rand_snapshot or MODES[self.mode] != "PLUGIN":
+            return False
+        (i, slot), values = self.rand_snapshot
+        for p, v in values:
+            plugins.setParamValue(v, p, i, slot)
+        self.rand_snapshot = None
+        self.flash("RESTORED")
+        return True
 
     def nudge_param(self, i, delta):
         target = self.device_target()
